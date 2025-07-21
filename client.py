@@ -1,5 +1,6 @@
 import socket
 import os
+import sys
 
 SERVER_HOST = '0.0.0.0'  #* IP du serveur
 SERVER_PORT = 2222       #* port du serveur
@@ -8,7 +9,13 @@ BUFFER_SIZE = 4096
 SEPARATOR = "<SEPARATOR>"
 
 def main():
-    filename = "testfile.txt"  #! le fichier à envoyer
+    if len(sys.argv) < 2:
+        print(f"Usage: python {sys.argv[0]} <fichier_à_envoyer>")
+        sys.exit(1)
+    filename = sys.argv[1]
+    if not os.path.isfile(filename):
+        print(f"Erreur : fichier '{filename}' introuvable.")
+        sys.exit(1)
     filesize = os.path.getsize(filename)
 
     s = socket.socket()
