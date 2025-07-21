@@ -1,3 +1,4 @@
+import os
 import socket
 
 SERVER_HOST = '0.0.0.0'
@@ -21,11 +22,10 @@ def main():
         received += client_socket.recv(BUFFER_SIZE).decode()
     header, rest = received.split(SEPARATOR, 1)
     filename = header.strip()
-    
+
     if "<SEPARATOR>" in rest:
         filesize_str, filedata = rest.split(SEPARATOR, 1)
     else:
-        
         filesize_str = ""
         for c in rest:
             if c.isdigit():
@@ -35,8 +35,12 @@ def main():
         filedata = rest[len(filesize_str):]
     filesize = int(filesize_str.strip())
 
-    with open(filename, 'wb') as f:
-        # Ecriture des First Octets du fichier déjà reçus
+    # On le fout dans un putain de dossier
+    received_dir = "Received"
+    os.makedirs(received_dir, exist_ok=True)
+    filepath = os.path.join(received_dir, os.path.basename(filename))
+
+    with open(filepath, 'wb') as f:
         f.write(filedata.encode())
         bytes_read_total = len(filedata)
         while bytes_read_total < filesize:
@@ -46,7 +50,7 @@ def main():
             f.write(bytes_read)
             bytes_read_total += len(bytes_read)
     
-    print(f"[+] Successfully received the file: {filename}")
+    print(f"[+] Successfully received the file: {filepath}")
     client_socket.close()
     s.close()
 
