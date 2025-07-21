@@ -8,27 +8,24 @@ BUFFER_SIZE = 4096
 SEPARATOR = "<SEPARATOR>"
 
 def receive_file(client_socket):
-    received = ""
-    while SEPARATOR not in received:
-        chunk = client_socket.recv(BUFFER_SIZE).decode()
+    # Lire le header en bytes
+    received = b""
+    while SEPARATOR.encode() not in received:
+        chunk = client_socket.recv(BUFFER_SIZE)
         if not chunk:
             return False  # Connexion fermée
         received += chunk
-    header, rest = received.split(SEPARATOR, 1)
-    filename = header.strip()
+    header, rest = received.split(SEPARATOR.encode(), 1)
+    filename = header.decode().strip()
 
-    # Cherche la taille du fichier
-    if SEPARATOR in rest:
-        filesize_str, filedata = rest.split(SEPARATOR, 1)
-    else:
-        filesize_str = ""
-        for c in rest:
-            if c.isdigit():
-                filesize_str += c
-            else:
-                break
-        filedata = rest[len(filesize_str):]
-    filesize = int(filesize_str.strip())
+    # Lire la taille du fichier
+    while SEPARATOR.encode() not in rest:
+        chunk = client_socket.recv(BUFFER_SIZE)
+        if not chunk:
+            return False
+        rest += chunk
+    filesize_str, filedata = rest.split(SEPARATOR.encode(), 1)
+    filesize = int(filesize_str.decode().strip())
 
     # On le fout dans un putain de dossier
     received_dir = "Received"
@@ -36,9 +33,8 @@ def receive_file(client_socket):
     filepath = os.path.join(received_dir, os.path.basename(filename))
 
     with open(filepath, 'wb') as f:
-        filedata_bytes = filedata.encode()
-        f.write(filedata_bytes)
-        bytes_read_total = len(filedata_bytes)
+        f.write(filedata)
+        bytes_read_total = len(filedata)
         while bytes_read_total < filesize:
             bytes_read = client_socket.recv(BUFFER_SIZE)
             if not bytes_read:
@@ -61,7 +57,8 @@ def main():
         try:
             if not receive_file(client_socket):
                 break
-        except Exception:
+        except Exception as e:
+            print(f"Erreur lors de la réception : {e}")
             break
 
     client_socket.close()
