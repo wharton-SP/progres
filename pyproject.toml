@@ -1,11 +1,12 @@
 [project]
 name = "progres-socket"
+version = "0.0.0"
+description = "Desktop app for sharing files through socket."
+readme = "README.MD"
+requires-python = ">=3.13"
 
 [tool.pyside6-project]
-# files = ["mainwindow.py", "form.ui"]
 files = [
-    "app/resources/",
-    "app/ui/",
-    "app/utils/",
     "main.py",
+    "app/ui/main.ui"
 ]
