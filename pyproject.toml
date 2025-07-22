@@ -1,0 +1,5 @@
+[project]
+name = "progres-socket"
+
+[tool.pyside6-project]
+files = ["mainwindow.py", "form.ui"]
