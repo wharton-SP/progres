@@ -1,8 +1,10 @@
+import os
 import socket
 import sys
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import x25519
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 IP_ADDRESS = "0.0.0.0"
@@ -16,8 +18,9 @@ SEPARATOR = b"===fisarahana==="
 private_key = x25519.X25519PrivateKey.generate()
 public_key = private_key.public_key()
 
+
 def bind_server_socket() -> socket.socket:
-    ''' Creates a server that will bind and listen to the default port and address '''
+    """Creates a server that will bind and listen to the default port and address"""
 
     server = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM)
 
@@ -44,15 +47,15 @@ def bind_server_socket() -> socket.socket:
 
 
 def send_public_key(sock: socket.socket):
-    ''' Sends public key to a connected client '''
+    """Sends public key to a connected client"""
 
     payload = KEY_HEADER + public_key.public_bytes_raw() + SEPARATOR
     sock.sendall(payload)
     print("[INFO] Sent public key to client")
 
 
-def receive_peer_key(sock: socket.socket) -> bytes:
-    ''' Receives the encoded peer key, sent from the client '''
+def receive_peer_key(sock: socket.socket) -> tuple[bytes, bytes]:
+    """Receives the encoded peer key, sent from the client"""
 
     buffer = b""
 
@@ -75,8 +78,8 @@ def receive_peer_key(sock: socket.socket) -> bytes:
         buffer = buffer.split(KEY_HEADER)[-1]
 
     try:
-        peer_key_bytes, _ = buffer.split(SEPARATOR, 1)
-        return peer_key_bytes
+        peer_key_bytes, rest = buffer.split(SEPARATOR, 1)
+        return peer_key_bytes, rest
 
     except ValueError:
         print("[ERR] Malformed peer key")
@@ -84,7 +87,7 @@ def receive_peer_key(sock: socket.socket) -> bytes:
 
 
 def derive_shared_key(peer_key_bytes: bytes) -> bytes:
-    ''' Creates an AES key from the received peer key '''
+    """Creates an AES key from the received peer key"""
 
     peer_public_key = x25519.X25519PublicKey.from_public_bytes(peer_key_bytes)
     shared_secret = private_key.exchange(peer_public_key)
@@ -100,6 +103,73 @@ def derive_shared_key(peer_key_bytes: bytes) -> bytes:
     return AES_key
 
 
+import os
+
+
+def receive_file(sock, aes_key: bytes, initial_buffer: bytes):
+
+    # First, receive the metadata
+    buffer = initial_buffer
+
+    while SEPARATOR not in buffer:
+        chunk = sock.recv(BUFFER_SIZE)
+
+        if not chunk:
+            print("[ERR] Connection closed before receiving metadata.")
+            return
+
+        buffer += chunk
+
+    metadata, leftover = buffer.split(SEPARATOR, 1)
+
+    try:
+        filename_str, file_size_str = metadata.decode().split("|")
+        file_size = int(file_size_str)
+
+    except Exception as e:
+        print(f"[ERR] Invalid metadata format: {e}")
+        return
+
+    print(f"[INFO] Receiving file: {filename_str} ({file_size} bytes)")
+
+    # Now receive the nonce (12 bytes for AES-GCM)
+    nonce = sock.recv(12)
+
+    if len(nonce) < 12:
+        print("[ERR] Failed to receive full nonce.")
+        return
+
+    ciphertext = leftover
+
+    while len(ciphertext) < file_size:
+        chunk = sock.recv(BUFFER_SIZE)
+
+        if not chunk:
+            break
+
+        ciphertext += chunk
+
+    try:
+        print(f"[DEBUG] Nonce: {nonce.hex()}")
+        print(f"[DEBUG] Ciphertext length: {len(ciphertext)}")
+
+        aesgcm = AESGCM(aes_key)
+        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+
+        # Save to folder
+        folder = "received_files"
+        os.makedirs(folder, exist_ok=True)
+        file_path = os.path.join(folder, filename_str)
+
+        with open(file_path, "wb") as f:
+            f.write(plaintext)
+
+        print(f"[SUCCESS] File saved to: {file_path}")
+
+    except Exception as e:
+        print(f"[ERR] Decryption failed: {e}")
+
+
 def main():
     server = bind_server_socket()
     print(f"[INFO] Listening on {server.getsockname()}...")
@@ -108,12 +178,15 @@ def main():
     print(f"[INFO] Connection from {addr}")
 
     send_public_key(client_socket)
-    peer_key_bytes = receive_peer_key(client_socket)
+    peer_key_bytes, leftover = receive_peer_key(client_socket)
 
     AES_key = derive_shared_key(peer_key_bytes)
 
     print("[SUCCESS] Shared AES key derived!")
     print(f"AES key (hex): {AES_key.hex()}")
+
+    print("[INFO] AES key derived. Ready to receive encrypted file...")
+    receive_file(client_socket, AES_key, leftover)
 
     client_socket.close()
     server.close()
