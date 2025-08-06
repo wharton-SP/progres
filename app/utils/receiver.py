@@ -1,7 +1,8 @@
 import os
 import socket
 import sys
-import threading  # <- Ajout de l'import pour le multithreading
+import threading
+from tqdm import tqdm  # <-- Ajout de l'import
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import x25519
@@ -151,13 +152,16 @@ def receive_file(sock, aes_key: bytes, initial_buffer: bytes):
 
     ciphertext = leftover
 
-    while len(ciphertext) < file_size:
-        chunk = sock.recv(BUFFER_SIZE)
-
-        if not chunk:
-            break
-
-        ciphertext += chunk
+    received = len(ciphertext)
+    with tqdm(total=file_size, unit="o", unit_scale=True, desc="Réception") as pbar:
+        pbar.update(received)
+        while received < file_size:
+            chunk = sock.recv(BUFFER_SIZE)
+            if not chunk:
+                break
+            ciphertext += chunk
+            received += len(chunk)
+            pbar.update(len(chunk))
 
     try:
         aesgcm = AESGCM(aes_key)

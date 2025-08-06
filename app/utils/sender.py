@@ -1,7 +1,8 @@
 import os
 import socket
 import sys
-import time  # <- Ajout de l'import pour la temporisation
+import time
+from tqdm import tqdm
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import x25519
@@ -12,7 +13,7 @@ import secrets
 # L'IP sera déterminée dynamiquement
 PREFERRED_PORT = 5000
 BUFFER_SIZE = 4096
-BROADCAST_PORT = 2222  # <- Ajout du port de découverte
+BROADCAST_PORT = 2222 
 
 KEY_HEADER = b"===fanala-hidy miankina==="
 SEPARATOR = b"===fisarahana==="
@@ -22,7 +23,6 @@ private_key = x25519.X25519PrivateKey.generate()
 public_key = private_key.public_key()
 
 
-# --- MODIFICATION START ---
 # Nouvelle fonction pour découvrir les serveurs sur le réseau
 def discover_servers(timeout=3) -> list:
     """Recherche des serveurs sur le réseau via un broadcast UDP."""
@@ -48,7 +48,6 @@ def discover_servers(timeout=3) -> list:
             print("       Assurez-vous d'être connecté à un réseau.")
 
     return servers
-# --- MODIFICATION END ---
 
 
 def connect_to_server(ip: str, port: int) -> socket.socket | None:
@@ -153,7 +152,15 @@ def send_file(sock: socket.socket, key: bytes):
     sock.sendall(nonce)
 
     print("[INFO] Envoi des données chiffrées du fichier...")
-    sock.sendall(encrypted_data)
+
+    total_size = len(encrypted_data)
+    sent = 0
+    with tqdm(total=total_size, unit="o", unit_scale=True, desc="Envoi") as pbar:
+        for i in range(0, total_size, BUFFER_SIZE):
+            chunk = encrypted_data[i:i+BUFFER_SIZE]
+            sock.sendall(chunk)
+            sent += len(chunk)
+            pbar.update(len(chunk))
 
     print("[SUCCESS] Fichier envoyé avec succès.")
 
