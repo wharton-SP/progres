@@ -1,6 +1,7 @@
 import os
 import socket
 import sys
+import time  # <- Ajout de l'import pour la temporisation
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import x25519
@@ -8,9 +9,10 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 import secrets
 
-IP_ADDRESS = "0.0.0.0"
+# L'IP sera déterminée dynamiquement
 PREFERRED_PORT = 5000
 BUFFER_SIZE = 4096
+BROADCAST_PORT = 2222  # <- Ajout du port de découverte
 
 KEY_HEADER = b"===fanala-hidy miankina==="
 SEPARATOR = b"===fisarahana==="
@@ -20,6 +22,35 @@ private_key = x25519.X25519PrivateKey.generate()
 public_key = private_key.public_key()
 
 
+# --- MODIFICATION START ---
+# Nouvelle fonction pour découvrir les serveurs sur le réseau
+def discover_servers(timeout=3) -> list:
+    """Recherche des serveurs sur le réseau via un broadcast UDP."""
+    servers = []
+    print(f"[*] Recherche de serveurs pendant {timeout} secondes...")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.settimeout(timeout)
+        try:
+            s.sendto(b"DISCOVER", ("255.255.255.255", BROADCAST_PORT))
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                try:
+                    data, addr = s.recvfrom(1024)
+                    if data.decode() == "SERVER_ACK" and addr[0] not in servers:
+                        servers.append(addr[0])
+                        print(f"    -> Serveur trouvé à l'adresse : {addr[0]}")
+                except socket.timeout:
+                    # Le timeout est normal, on continue juste d'attendre
+                    pass
+        except OSError as e:
+            print(f"[WARN] Erreur lors de la diffusion réseau : {e}")
+            print("       Assurez-vous d'être connecté à un réseau.")
+
+    return servers
+# --- MODIFICATION END ---
+
+
 def connect_to_server(ip: str, port: int) -> socket.socket | None:
     """Initializes a connection to the server"""
 
@@ -27,25 +58,25 @@ def connect_to_server(ip: str, port: int) -> socket.socket | None:
 
     try:
         client.connect((ip, port))
-        print(f"[INFO] Connected to {ip}:{port}")
+        print(f"[INFO] Connecté à {ip}:{port}")
         return client
 
     except OSError as e:
-        print(f"[WARN] Could not connect to {ip}:{port}: {e}")
+        print(f"[WARN] Impossible de se connecter à {ip}:{port}: {e}")
         return None
 
 
 def receive_peer_key(sock: socket.socket) -> bytes:
     """Receives the encoded peer key, sent from the server"""
 
-    print("[INFO] Waiting for peer's public key...")
+    print("[INFO] En attente de la clé publique du pair...")
     buffer = b""
 
     while True:
         chunk = sock.recv(BUFFER_SIZE)
 
         if not chunk:
-            print("[ERR] Connection closed by server before receiving key")
+            print("[ERR] Connexion fermée par le serveur avant la réception de la clé")
             sys.exit(1)
         buffer += chunk
 
@@ -54,7 +85,7 @@ def receive_peer_key(sock: socket.socket) -> bytes:
 
     # Parse received message
     if KEY_HEADER not in buffer:
-        print("[ERR] KEY_HEADER not found")
+        print("[ERR] KEY_HEADER non trouvé")
         sys.exit(1)
 
     try:
@@ -63,20 +94,22 @@ def receive_peer_key(sock: socket.socket) -> bytes:
         return peer_key_bytes
 
     except ValueError:
-        print("[ERR] Malformed key exchange message")
+        print("[ERR] Message d'échange de clés malformé")
         sys.exit(1)
 
 
 def send_own_key(sock: socket.socket, public_key_bytes: bytes):
     """Sends public key to a the server"""
 
-    print("[INFO] Sending our public key...")
+    print("[INFO] Envoi de notre clé publique...")
     payload = KEY_HEADER + public_key_bytes + SEPARATOR
     sock.sendall(payload)
 
 
 def derive_shared_key(peer_key_bytes: bytes) -> bytes:
     """Creates an AES key from the received peer key"""
+
+
 
     peer_public_key = x25519.X25519PublicKey.from_public_bytes(peer_key_bytes)
     shared_secret = private_key.exchange(peer_public_key)
@@ -104,41 +137,69 @@ def encrypt_file(file_path: str, key: bytes) -> tuple[bytes, bytes, bytes]:
 
 
 def send_file(sock: socket.socket, key: bytes):
-    file_path = input("Enter path to file to send: ").strip()
+    file_path = input("Entrez le chemin du fichier à envoyer : ").strip()
 
     if not os.path.exists(file_path):
-        print("[ERR] File not found.")
+        print("[ERR] Fichier non trouvé.")
         return
 
     encrypted_data, nonce, filename = encrypt_file(file_path, key)
     metadata = f"{filename.decode()}|{len(encrypted_data)}".encode()
 
-    print("[INFO] Sending metadata...")
+    print("[INFO] Envoi des métadonnées...")
     sock.sendall(metadata + SEPARATOR)
 
-    print("[INFO] Sending nonce...")
+    print("[INFO] Envoi du nonce...")
     sock.sendall(nonce)
 
-    print("[INFO] Sending encrypted file data...")
+    print("[INFO] Envoi des données chiffrées du fichier...")
     sock.sendall(encrypted_data)
 
-    print("[SUCCESS] File sent successfully.")
+    print("[SUCCESS] Fichier envoyé avec succès.")
 
 
 def main():
-    client_socket = connect_to_server(IP_ADDRESS, PREFERRED_PORT)
+    # --- MODIFICATION START ---
+    # Étape 1: Découvrir les serveurs
+    available_servers = discover_servers()
+
+    if not available_servers:
+        print("\n[INFO] Aucun serveur trouvé. Assurez-vous que le script receiver.py est en cours d'exécution sur le réseau.")
+        sys.exit(0)
+
+    # Étape 2: Laisser l'utilisateur choisir un serveur
+    print("\n--- Serveurs Disponibles ---")
+    for i, server_ip in enumerate(available_servers, 1):
+        print(f"{i}. {server_ip}")
+    
+    chosen_ip = ""
+    while not chosen_ip:
+        try:
+            choice = int(input(f"\nChoisissez un serveur (1-{len(available_servers)}): "))
+            if 1 <= choice <= len(available_servers):
+                chosen_ip = available_servers[choice - 1]
+            else:
+                print("Choix invalide.")
+        except (ValueError, IndexError):
+            print("Veuillez entrer un numéro valide.")
+
+    # Étape 3: Se connecter au serveur choisi
+    client_socket = connect_to_server(chosen_ip, PREFERRED_PORT)
+    # --- MODIFICATION END ---
+
 
     if not client_socket:
-        print("[INFO] Could not connect on preferred port.")
+        print("[INFO] La connexion a échoué.")
         sys.exit(1)
 
+    # La suite du code reste identique : échange de clés et envoi du fichier
     # ECDH (Elliptic Curve Diffie-Hellman) handshake
     peer_key_bytes = receive_peer_key(client_socket)
     send_own_key(client_socket, public_key.public_bytes_raw())
 
     AES_key = derive_shared_key(peer_key_bytes)
 
-    print(f"[SUCCESS] Shared AES key derived: {AES_key.hex()}")
+    print(f"[SUCCESS] Clé AES partagée dérivée : {AES_key.hex()}")
 
     send_file(client_socket, AES_key)
 
