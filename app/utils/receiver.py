@@ -1,6 +1,8 @@
 import os
 import socket
 import sys
+import threading
+from tqdm import tqdm  # <-- Ajout de l'import
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import x25519
@@ -10,6 +12,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 IP_ADDRESS = "0.0.0.0"
 PREFERRED_PORT = 5000
 BUFFER_SIZE = 4096
+BROADCAST_PORT = 2222
 
 KEY_HEADER = b"===fanala-hidy miankina==="
 SEPARATOR = b"===fisarahana==="
@@ -19,6 +22,18 @@ private_key = x25519.X25519PrivateKey.generate()
 public_key = private_key.public_key()
 
 
+def handle_discovery():
+    """Cette fonction écoute les messages de découverte sur le réseau."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.bind(("", BROADCAST_PORT))
+        print(f"[*] Le service de découverte est actif sur le port {BROADCAST_PORT}")
+        while True:
+            data, addr = s.recvfrom(1024)
+            if data.decode() == "DISCOVER":
+                print(f"[*] Requête de découverte reçue de {addr}")
+                s.sendto(b"SERVER_ACK", addr)
+
 def bind_server_socket() -> socket.socket:
     """Creates a server that will bind and listen to the default port and address"""
 
@@ -26,19 +41,19 @@ def bind_server_socket() -> socket.socket:
 
     try:
         server.bind((IP_ADDRESS, PREFERRED_PORT))
-        print(f"[INFO] Server bound to preferred port {PREFERRED_PORT}")
+        print(f"[INFO] Serveur lié au port {PREFERRED_PORT}")
 
     # If the default port is not available
     except OSError as e:
-        print(f"[WARN] Preferred port {PREFERRED_PORT} unavailable: {e}")
+        print(f"[WARN] Port {PREFERRED_PORT} indisponible: {e}")
 
         # Try using any available port
         try:
             server.bind((IP_ADDRESS, 0))
-            print(f"[INFO] Server bound to random port {server.getsockname()[1]}")
+            print(f"[INFO] Serveur lié à un port aléatoire {server.getsockname()[1]}")
 
         except OSError as another_e:
-            print(f"[ERR] Unable to bind to any port: {another_e}")
+            print(f"[ERR] Impossible de se lier à un port: {another_e}")
             sys.exit(1)
 
     # If everything works, listen to the actual address
@@ -51,7 +66,7 @@ def send_public_key(sock: socket.socket):
 
     payload = KEY_HEADER + public_key.public_bytes_raw() + SEPARATOR
     sock.sendall(payload)
-    print("[INFO] Sent public key to client")
+    print("[INFO] Clé publique envoyée au client")
 
 
 def receive_peer_key(sock: socket.socket) -> tuple[bytes, bytes]:
@@ -63,7 +78,7 @@ def receive_peer_key(sock: socket.socket) -> tuple[bytes, bytes]:
         chunk = sock.recv(BUFFER_SIZE)
 
         if not chunk:
-            print("[ERR] Connection closed before key received")
+            print("[ERR] Connexion fermée avant la réception de la clé")
             sys.exit(1)
 
         buffer += chunk
@@ -73,7 +88,7 @@ def receive_peer_key(sock: socket.socket) -> tuple[bytes, bytes]:
 
     # Should be just raw key wrapped
     if KEY_HEADER in buffer:
-        print("[WARN] Unexpected header in peer response")
+        print("[WARN] En-tête inattendu dans la réponse du pair")
         # Strip it if present
         buffer = buffer.split(KEY_HEADER)[-1]
 
@@ -82,7 +97,7 @@ def receive_peer_key(sock: socket.socket) -> tuple[bytes, bytes]:
         return peer_key_bytes, rest
 
     except ValueError:
-        print("[ERR] Malformed peer key")
+        print("[ERR] Clé du pair malformée")
         sys.exit(1)
 
 
@@ -111,7 +126,7 @@ def receive_file(sock, aes_key: bytes, initial_buffer: bytes):
         chunk = sock.recv(BUFFER_SIZE)
 
         if not chunk:
-            print("[ERR] Connection closed before receiving metadata.")
+            print("[ERR] Connexion fermée avant la réception des métadonnées.")
             return
 
         buffer += chunk
@@ -123,32 +138,32 @@ def receive_file(sock, aes_key: bytes, initial_buffer: bytes):
         file_size = int(file_size_str)
 
     except Exception as e:
-        print(f"[ERR] Invalid metadata format: {e}")
+        print(f"[ERR] Format des métadonnées invalide: {e}")
         return
 
-    print(f"[INFO] Receiving file: {filename_str} ({file_size} bytes)")
+    print(f"[INFO] Réception du fichier : {filename_str} ({file_size} octets)")
 
     # Now receive the nonce (12 bytes for AES-GCM)
     nonce = sock.recv(12)
 
     if len(nonce) < 12:
-        print("[ERR] Failed to receive full nonce.")
+        print("[ERR] Échec de la réception du nonce complet.")
         return
 
     ciphertext = leftover
 
-    while len(ciphertext) < file_size:
-        chunk = sock.recv(BUFFER_SIZE)
-
-        if not chunk:
-            break
-
-        ciphertext += chunk
+    received = len(ciphertext)
+    with tqdm(total=file_size, unit="o", unit_scale=True, desc="Réception") as pbar:
+        pbar.update(received)
+        while received < file_size:
+            chunk = sock.recv(BUFFER_SIZE)
+            if not chunk:
+                break
+            ciphertext += chunk
+            received += len(chunk)
+            pbar.update(len(chunk))
 
     try:
-        print(f"[DEBUG] Nonce: {nonce.hex()}")
-        print(f"[DEBUG] Ciphertext length: {len(ciphertext)}")
-
         aesgcm = AESGCM(aes_key)
         plaintext = aesgcm.decrypt(nonce, ciphertext, None)
 
@@ -160,28 +175,35 @@ def receive_file(sock, aes_key: bytes, initial_buffer: bytes):
         with open(file_path, "wb") as f:
             f.write(plaintext)
 
-        print(f"[SUCCESS] File saved to: {file_path}")
+        print(f"[SUCCESS] Fichier sauvegardé ici : {file_path}")
 
     except Exception as e:
-        print(f"[ERR] Decryption failed: {e}")
+        print(f"[ERR] Le déchiffrement a échoué : {e}")
 
 
 def main():
-    server = bind_server_socket()
-    print(f"[INFO] Listening on {server.getsockname()}...")
+    # --- MODIFICATION START ---
+    # Lancer le service de découverte dans un thread séparé (en arrière-plan)
+    discovery_thread = threading.Thread(target=handle_discovery, daemon=True)
+    discovery_thread.start()
+    # --- MODIFICATION END ---
 
+    server = bind_server_socket()
+    print(f"[INFO] En écoute sur {server.getsockname()}...")
+
+    # Le serveur attendra maintenant une connexion TCP tout en répondant aux pings de découverte
     client_socket, addr = server.accept()
-    print(f"[INFO] Connection from {addr}")
+    print(f"[INFO] Connexion de {addr}")
 
     send_public_key(client_socket)
     peer_key_bytes, leftover = receive_peer_key(client_socket)
 
     AES_key = derive_shared_key(peer_key_bytes)
 
-    print("[SUCCESS] Shared AES key derived!")
-    print(f"AES key (hex): {AES_key.hex()}")
+    print("[SUCCESS] Clé AES partagée dérivée !")
+    print(f"Clé AES (hex): {AES_key.hex()}")
 
-    print("[INFO] AES key derived. Ready to receive encrypted file...")
+    print("[INFO] Clé AES dérivée. Prêt à recevoir un fichier chiffré...")
     receive_file(client_socket, AES_key, leftover)
 
     client_socket.close()
