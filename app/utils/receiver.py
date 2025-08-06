@@ -102,10 +102,6 @@ def derive_shared_key(peer_key_bytes: bytes) -> bytes:
 
     return AES_key
 
-
-import os
-
-
 def receive_file(sock, aes_key: bytes, initial_buffer: bytes):
 
     # First, receive the metadata
